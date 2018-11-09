@@ -18,26 +18,57 @@ Fixtures
    
 **Access Tokens:** Access_Token_For_Artur, Access_Token_For_Kirill
 
-CRUD operations
----------------
-- [Create](#create-operation) 
-- [Read](#read-operations)
-- [Update](#update-operation)
-- [Delete](#delete-operations)
+# Basic concepts
+This bundle provides ready to use action classes for standard REST API operations
+such as create, update, delete, list and transit.
+It uses class per action approach, so each action type has it's own class.
+Also this bundle utilizes concept of having many services (i.e. class instances) per one action class.
+   
+Imagine we have 3 endpoints that provide a list of resources.
+````
+GET /resource1
+GET /resource2
+GET /resource3
+````
+Each of these endpoints has same business logic and can be covered by the same code.
+We have to query database, apply some filters, pagination and sorting. 
+Then we have to prepare result data, serialize it and send back to the client.
+The only difference here is that we have different resource entity repository for each endpoint. 
+Also these almost same endpoints can have different values for some parameters 
+such as available filters, default page size, etc. 
+So the idea is to have unified parametrized list action class, 
+and instantiate it three times with different arguments. 
+For more flexibility in parametrization we use Symfony OptionResolver component. 
+So each action class has a set of options to configure concrete endpoint.
+ 
+# Under the hood
+This bundle consist of next components:
+   1. Resource metadata factory
+   2. Serializer extension with next features
+   - expand of entity relations on demand
+   - access control per field during serialization
+   3. Event listeners that handle frequent use cases in api development
+   - json decoder that populates HttpFoundation request object's request parameter bag with passed data
+   - exception listener that formats errors
+   4. Error factory
+   5. Base class for voters that vote on concrete resource entity
+   6. Action classes
+
+## Action classes
+- [List](#list-action)
+- [Fetch](#fetch-action)
+- [Create](#create-action) 
+- [Update](#update-action)
+- [Delete](#delete-action)
 ---------
 ## Create operation
 
----------------
-## Read operations
-
-There are two types of read operations: collection operation ([List](#list)) and single item ([Fetch](#fetch)) operation.
-
-### List
+## List action
 Get list of items. \
 Object type: collection \
 HTTP method: GET 
 
-#### Configuration
+### Configuration
 1 Add service. Example: 
 ```php
 # config/services.yml
@@ -78,7 +109,7 @@ country.list:
 ...
 ```
 
-#### Available Options 
+### Available Options 
 | Option                           | Type      | Default value               | Description                                                       |
 | -------------------------------- | --------  | ----------------------------|------------------------------------------------------------------ |
 | default_per_page                 | integer   | 20                          | Results per page (Pagination)        |
@@ -89,7 +120,7 @@ country.list:
 | filters                          | array     | []                          | Filtering results ([More information](#filters))|
 | preset_filters                   | array     | []                          | Preset filters and values. String value ```__USER__```  can be used as alias for the current authorized user.|
 
-#### *Filters*
+### *Filters*
 __Query filter__\
 Available text search in some fields (```LIKE```). Supports wildcards (```*suffix```, ```prefix*```, ```*middle*```) \
 To add fields you need to edit the ```createHandlers()``` method in the entity repository. \
@@ -110,7 +141,8 @@ class CountryRepository extends EntityRepository implements FilterableRepository
         return [
             new SearchHandler([
                'language',
-               'cities.name' // use the dot for fields of related entities
+               'cities.name', // use the dot for fields of related entities
+               'president_full_name' => ['president.firstName', 'president.lastName'] //use array to concatenate fields
             ])
         ];
     }
@@ -119,11 +151,15 @@ class CountryRepository extends EntityRepository implements FilterableRepository
 ```
 Sample query with filter: ``` GET /country?query=*nglish```
 
+You can specify particular fields you want to search in (from list you passed to SearchHandler).
+
+``` GET /country?query[term]=*Charles*&query[fields]=president_full_name,cities.name```
+
 __Sorting__ \
 One may add the property name and sort order to the request (pattern: 'field|order') to sort. Example:
 ```'order-by': 'createdAt|desc'```
 
-*Filter by properties*
+__Filter by properties__ \
 Such filtering by entity is available:
 - exact matching (Example: ```GET /country?status=false```);
 - using comparison operators (`````!=, <=, <>````` etc.) and ```*```, ```'is_null_value'```, ```is_not_null_value``` 
@@ -209,7 +245,7 @@ services:
             - ['setOptions', [{'filters': ['customFilterName']}]]
     ...
 ```
-#### Additional functionality
+### Additional functionality
 #### *Pagination*
 [Pagerfanta](https://github.com/whiteoctober/Pagerfanta) is used for pagination and works with DoctrineORM query objects only. \
 ApiBundle pagination configured with default options ```pagerfanta_fetch_join_collection = false``` and ```pagerfanta_use_output_walkers = null``` (This setting can be changed in options). \
@@ -314,11 +350,11 @@ Example:
 }
 
 ```
-#### Request example
+### Request example
 ```php
 http://mysite/country?expand=cities
 ```
-#### Response example 
+### Response example 
 ```php
 {
     total: 2,
@@ -398,12 +434,12 @@ http://mysite/country?expand=cities
 }
 ```
 
-### Fetch
+## Fetch action
 Get single item by identifier. \
 Object type: item \
 HTTP method: GET 
 
-#### Configuration
+### Configuration
 1 Add service. Example: 
 ```php
 # config/services.yml
@@ -439,7 +475,7 @@ country.fetch:
     defaults: { _controller: action.country.fetch:executeAction }
 ...
 ```
-#### Available Options 
+### Available Options 
 | Option                           | Type         | Default value               | Description                          |
 | -------------------------------- | -----------  | ----------------------------|------------------------------------- |
 | serialization_groups             | array        | ['default']                 | One can serialize properties that belong to chosen groups only |
@@ -505,15 +541,15 @@ Where: \
 3 Add `'access_attribute'` to service config for set attributes to check user permissions (as needed). \
 `'access_attribute' : 'fetch'` by default.
 
-#### Additional functionality
+### Additional functionality
 #### *Expand*
 One can use the related entity references instead of full value in the response. See [Expand in ListAction](#expand)
 
-#### Request example
+### Request example
 ```php
 http://mysite/country/1?expand=cities
 ```
-#### Response example 
+### Response example 
 ```php
 {
     id: 1,
@@ -551,11 +587,182 @@ http://mysite/country/1?expand=cities
         ]
 }
 ```
----------
-### Update operation
 
-----------
-### Delete operations
+## Abstract Form Action Class
+
+This is an abstract class that is the parent for the [Create](#create-action) and [Update](#update-action) Actions.
+Can be used to inherit and to create another custom actions.
+
+### Available Options
+
+ | Option                | Type      | Description                                              | Default Values    |
+ | ----------------------| --------  |----------------------------------------------------------|-------------------|
+ | http_method           | string    |HTTP method                                               | POST              |
+ | success_status_code   | integer   |Status that is returned after execution                   | 200               |
+ | return_entity         | boolean   |Result entity in response                                 | true              |
+ | form_options          | array     |options that will be used in building form                | []                |
+ | before_save_events    | array     |Before submit events (events that throws before the flush)| []                |
+ | after_save_events     | array     |After submit events (events that throws after the flush)  | []                |
+
+
+## Create Action
+
+Action to create a new object.
+This is a subclass that inherits from [AbstractFormAction](#abstract-form-action-class) class.
+
+There are two required parameters: Entity class and FormType Class.
+Example:
+
+```
+# src/AppBundle/Resources/config/services.yml
+
+services:
+    #...
+
+    action.user.create:
+        parent: core.action.abstract
+        class: Requestum\ApiBundle\Action\CreateAction
+        arguments:
+            - AppBundle\Entity\User
+            - AppBundle\Form\User\UserType
+```
+
+
+### Available Options
+
+ | Option                | Type      | Description                                              | Default Values    |
+ | ----------------------| --------  |----------------------------------------------------------|-------------------|
+ | http_method           | string    |HTTP method                                               | POST              |
+ | success_status_code   | integer   |Status that is returned after execution                   | 201               |
+ | return_entity         | boolean   |Result entity in response                                 | true              |
+ | form_options          | array     |options that will be used in building form                | []                |
+ | before_save_events    | array     |Before submit events (events that throws before the flush)| []                |
+ | after_save_events     | array     |After submit events (events that throws after the flush)  | []                |
+ | access_attribute      | string    |Access Attribute                                          | create            |
+
+### Event listeners
+
+By default Create and Update actions throws such events: `'action.before_save'`, `'action.after_save'`. You can dispatch this events, or throw another events using such options as: `before_save_events` and `after_save_events`.
+
+You can create listeners that will respond to event occuring before and after submit the request.
+You need to configure it in `services.yml` file:
+```
+    before_save.user.event:
+        class: Requestum\ApiBundle\EventListener\UserBeforeSaveListener
+        arguments: ["@security.token_storage"]
+        tags:
+            - { name: kernel.event_listener, event: action.before_save_user, method: onBeforeSaveUser }
+
+    after_save.user.event:
+        class: Requestum\ApiBundle\EventListener\UserAfterSaveListener
+        arguments: ["@security.token_storage"]
+        tags:
+            - { name: kernel.event_listener, event: action.after_save_user, method: onAfterSaveUser }
+
+```
+Then you need to specify this listeners in create action configuration:
+```
+    action.user.create:
+        parent: core.action.abstract
+        class: Requestum\ApiBundle\Action\CreateAction
+        arguments:
+            - AppBundle\Entity\User
+            - AppBundle\Form\User\UserType
+        calls:
+            - ['setOptions', [{'before_save_events': ['action.before_save_user'], 'after_save_events': ['action.after_save_user']}]]
+```
+
+
+## Update Action
+
+Action to update an existing object.
+This is a subclass that inherits from [AbstractFormAction](#abstract-form-action-class) class.
+
+There are two required parameters: Entity class and FormType Class.
+Example:
+
+```
+# src/AppBundle/Resources/config/services.yml
+
+services:
+    #...
+
+    action.user.update:
+        parent: core.action.abstract
+        class: Requestum\ApiBundle\Action\UpdateAction
+        arguments:
+            - AppBundle\Entity\User
+            - AppBundle\Form\User\UserType
+```
+
+
+### Available Options
+
+ | Option                | Type      | Description                                              | Default Values    |
+ | ----------------------| --------  |----------------------------------------------------------|-------------------|
+ | http_method           | string    |HTTP method                                               | PATCH             |
+ | success_status_code   | integer   |Status that is returned after execution                   | 200               |
+ | return_entity         | boolean   |Result entity in response                                 | true              |
+ | form_options          | array     |options that will be used in building form                | []                |
+ | before_save_events    | array     |Before submit events (events that throws before the flush)| []                |
+ | after_save_events     | array     |After submit events (events that throws after the flush)  | []                |
+ | access_attribute      | string    |Access Attribute                                          | update            |
+
+
+Update action has the same available features and options as a create action. (see "[Create Action](#create-action)")
+
+
+## Delete Action
+
+Action to delete an existing object
+
+There is one required parameter: Entity class.
+Example:
+
+```
+# src/AppBundle/Resources/config/services.yml
+
+services:
+    #...
+
+    action.user.delete:
+        parent: core.action.abstract
+        class: Requestum\ApiBundle\Action\DeleteAction
+        arguments:
+            - AppBundle\Entity\User
+```
+
+
+### Available Options
+
+ | Option                | Type         | Description                                            | Default Values   |
+ | ----------------------| -------------|--------------------------------------------------------|------------------|
+ | fetch_field           | string       |The field that is the entity identifier (id by default) | id               |
+ | before_delete_events  | array        |Before delete events                                    | []               |
+ | access_attribute      | string       |Access Attribute                                        | delete           |
+
+### Event listeners
+By default Delete action throws a such event: `'action.before_delete'`. You can dispatch this event, or throw another events using such an option: `before_delete_events`.
+
+You can create listeners that will respond to event occuring before delete the entity.
+You need to configure it in `services.yml` file:
+```
+    before_delete.user.event:
+        class: Requestum\ApiBundle\EventListener\UserBeforeDeleteListener
+        tags:
+            - { name: kernel.event_listener, event: action.before_delete_user, method: onBeforeDeleteUser }
+
+```
+Then you need to specify this listeners in delete action configuration:
+```
+    action.user.delete:
+        parent: core.action.abstract
+        class: Requestum\ApiBundle\Action\DeleteAction
+        arguments:
+            - AppBundle\Entity\User
+        calls:
+            - ['setOptions', [{'before_delete_events': ['action.before_delete_user'] }]]
+```
 
 
 
